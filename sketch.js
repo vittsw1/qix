@@ -207,12 +207,13 @@ function movePlayerTick() {
 
 function closeAndCapture() {
   if (path.length < 2) return;
-  // Congela il percorso come claimed (parete)
+
+  // Congela il percorso come claimed
   for (const p of path) {
     claimed[p.r][p.c] = true;
   }
 
-  // Flood-fill dall'enemy per marcare l'area connessa all'enemy (NON da catturare)
+  // Flood-fill dall'enemy
   const visited = Array.from({ length: rows }, () => Array(cols).fill(false));
   const q = [];
 
@@ -237,23 +238,18 @@ function closeAndCapture() {
     }
   }
 
-  // Tutti i tile unclaimed non visitati sono chiusi -> rivelali
+  // Rivelazione finale
   let newlyRevealed = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (!claimed[r][c] && !revealed[r][c]) {
-        if (!visited[r][c]) {
-          revealed[r][c] = true;
-          newlyRevealed++;
-        }
+      if (!claimed[r][c] && !revealed[r][c] && !visited[r][c]) {
+        revealed[r][c] = true;
+        newlyRevealed++;
       }
     }
   }
 
-  // Se vuoi rendere il perimetro della nuova area "sicuro", il path basta.
-  // (Semplificazione: non calcoliamo l'intero bordo della regione rivelata)
-
-  // Avanza livello se raggiunta soglia
+  // Verifica avanzamento livello
   if (revealedRatio() >= TARGET_REVEAL && !levelCleared) {
     levelCleared = true;
     showLevelBanner('Livello completato 🎉');
@@ -261,6 +257,8 @@ function closeAndCapture() {
     setTimeout(nextLevel, 2000);
   }
 }
+
+
 
 function moveEnemy() {
   // Prossima posizione
