@@ -1,440 +1,297 @@
-/* Gals Panic – template p5.js (tile-based capture)
-   Meccaniche base:
-   - Muovi sul bordo (sicuro). Entra nell'area scura per tracciare.
-   - Se chiudi un percorso, catturi la zona che non contiene il nemico (flood-fill).
-   - Se il nemico tocca il tuo tracciato, lo perdi.
-   Contenuti: usa solo ritratti di persone ADULTE, non espliciti e con licenza idonea.
-*/
-
-// Config
-const TILE = 12;
-const W = 720, H = 480; // multipli di TILE
-// Velocità: più alto = più lento (si muove ogni N frame)
-const SAFE_SPEED_TICKS = 1;   // sul bordo: scorrevole
-const TRACE_SPEED_TICKS = 3;  // mentre traccia: più lento (difficoltà ↑)
-const TARGET_REVEAL = 0.75;   // 75% per "vittoria"
-
-// File immagine (in assets/images/)
-const BG_SOURCES = ['assets/images/woman1.jpg', 'assets/images/woman2.jpg'];
-
-// Velocità nemico per livello (più veloce ai livelli successivi)
-const ENEMY_SPEED_BY_LEVEL = [
-  { vx: 3.0, vy: 2.5 }, // livello 1
-  { vx: 3.6, vy: 3.0 }  // livello 2
-];
-
-let cols, rows;
-let claimed;   // boolean [r][c] – bordo/sicuro
-let revealed;  // boolean [r][c] – area catturata
-let path = []; // array di {r,c}
-let tracing = false;
-
-let player = { r: 0, c: 0, dr: 0, dc: 1, lastSafeR: 0, lastSafeC: 0, tick: 0 };
-let enemy = { x: 0, y: 0, vx: 2.1, vy: 1.7, radius: 6 };
-
-let bgImgs = [];     // tutte le immagini caricate
-let bgImg = null;    // immagine corrente
-let scaledBg = null; // cache dell'immagine ridimensionata alla canvas
-
-let level = 0;
-let levelCleared = false;
-let gameCompleted = false;
-
-function preload() {
-  // Carica tutte le immagini per i livelli
-  bgImgs = BG_SOURCES.map(src => loadImage(src));
-}
+let player;
+let trails = [];
+let isDrawing = false;
+let drawStart;
+let gameArea;
+let enemies = [];
+let percentRevealed = 0;
+let gameOver = false;
+let retroSound;
 
 function setup() {
-  const cnv = createCanvas(W, H);
-  cnv.parent('game-holder');
-
-  cols = floor(W / TILE);
-  rows = floor(H / TILE);
-
-  bgImg = bgImgs[level] || null;
-  rebuildScaledBg();
-  resetGameState();
+  const holder = document.getElementById('game-holder');
+  const canvas = createCanvas(holder.offsetWidth, holder.offsetHeight);
+  canvas.parent(holder);
+  gameArea = createGraphics(width, height);
+  gameArea.background(50);
+  player = new Player();
+  enemies.push(new Enemy(width / 2, height / 2));
+  retroSound = getAudioContext();
 }
 
-function setEnemySpeedForLevel() {
-  const spec = ENEMY_SPEED_BY_LEVEL[Math.min(level, ENEMY_SPEED_BY_LEVEL.length - 1)];
-  enemy.vx = spec.vx;
-  enemy.vy = spec.vy;
-}
+function draw() {
+  if (gameOver) return;
 
-function resetGameState() {
-  claimed = Array.from({ length: rows }, () => Array(cols).fill(false));
-  revealed = Array.from({ length: rows }, () => Array(cols).fill(false));
-  tracing = false;
-  path = [];
-  levelCleared = false;
+  background(0);
+  image(gameArea, 0, 0);
 
-  // Crea un bordo sicuro di 1 tile
-  for (let c = 0; c < cols; c++) {
-    claimed[0][c] = true;
-    claimed[rows - 1][c] = true;
-  }
-  for (let r = 0; r < rows; r++) {
-    claimed[r][0] = true;
-    claimed[r][cols - 1] = true;
+  for (let trail of trails) {
+    trail.show();
   }
 
-  // Posiziona player sul bordo
-  player.r = 0; player.c = 0; player.dr = 0; player.dc = 1;
-  player.lastSafeR = player.r; player.lastSafeC = player.c;
-  player.tick = 0;
+  player.update();
+  player.show();
 
-  // Nemico dentro l'area non rivelata
-  enemy.x = width * 0.5;
-  enemy.y = height * 0.5;
-  setEnemySpeedForLevel();
-}
-
-function nextLevel() {
-  level++;
-  if (level < bgImgs.length) {
-    bgImg = bgImgs[level] || null;
-    rebuildScaledBg();
-    resetGameState();
-    loop(); // riprende il draw
-  } else {
-    // Gioco completato
-    gameCompleted = true;
-    loop(); // lascio correre un frame per disegnare il messaggio finale
-  }
-}
-
-function rebuildScaledBg() {
-  // Prepara una versione già scalata dell'immagine per disegnare solo i riquadri rivelati
-  if (!bgImg) { scaledBg = null; return; }
-
-  const imgRatio = bgImg.width / bgImg.height;
-  const canvasRatio = width / height;
-  let dw, dh;
-  if (imgRatio > canvasRatio) { // immagine più larga: adatta in altezza
-    dh = height; dw = dh * imgRatio;
-  } else {
-    dw = width; dh = dw / imgRatio;
-  }
-
-  scaledBg = createGraphics(width, height);
-  scaledBg.image(bgImg, (width - dw) / 2, (height - dh) / 2, dw, dh);
-}
-
-function showLevelBanner(msg) {
-  push();
-  noStroke();
-  fill(0, 0, 0, 180);
-  rect(0, 0, width, height);
-  textAlign(CENTER, CENTER);
-  textSize(36);
-  fill('#22d3ee');
-  text(msg, width / 2, height / 2);
-  pop();
-}
-
-function drawBackground() {
-  // Disegna l’immagine SOLO dove revealed[r][c] è true
-  if (!scaledBg) return;
-
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (revealed[r][c]) {
-        const x = c * TILE;
-        const y = r * TILE;
-        // copia un tassello dalla grafica scalata nelle stesse coordinate
-        image(scaledBg, x, y, TILE, TILE, x, y, TILE, TILE);
-      }
-    }
-  }
-}
-
-function drawOverlay() {
-  // Overlay scuro sui tile NON rivelati
-  noStroke();
-  fill(0, 0, 0, 170);
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (!revealed[r][c]) {
-        rect(c * TILE, r * TILE, TILE, TILE);
-      }
-    }
-  }
-}
-
-function keyPressed() {
-  if (keyCode === LEFT_ARROW)  { player.dr = 0; player.dc = -1; }
-  if (keyCode === RIGHT_ARROW) { player.dr = 0; player.dc = 1; }
-  if (keyCode === UP_ARROW)    { player.dr = -1; player.dc = 0; }
-  if (keyCode === DOWN_ARROW)  { player.dr = 1; player.dc = 0; }
-}
-
-function inBounds(r, c) {
-  return r >= 0 && c >= 0 && r < rows && c < cols;
-}
-
-function tileIsSafe(r, c) {
-  return inBounds(r, c) && claimed[r][c];
-}
-
-function tileIsUnclaimed(r, c) {
-  return inBounds(r, c) && !claimed[r][c] && !revealed[r][c];
-}
-
-function movePlayerTick() {
-  player.tick++;
-
-  // usa velocità diverse a seconda che stia tracciando o no
-  const stepEvery = tracing ? TRACE_SPEED_TICKS : SAFE_SPEED_TICKS;
-  if (player.tick % stepEvery !== 0) return;
-
-  const nr = player.r + player.dr;
-  const nc = player.c + player.dc;
-  if (!inBounds(nr, nc)) return;
-
-  const nextIsSafe = tileIsSafe(nr, nc);
-  const nextIsUnclaimed = tileIsUnclaimed(nr, nc);
-
-  // Inizio/continuazione tracciamento
-  if (!tracing && nextIsUnclaimed) {
-    tracing = true;
-    path = [];
-  }
-
-  // Muovi
-  player.r = nr; player.c = nc;
-
-  if (tracing) {
-    // Aggiungi tile al path se nuovo
-    if (path.length === 0 || path[path.length - 1].r !== nr || path[path.length - 1].c !== nc) {
-      path.push({ r: nr, c: nc });
-    }
-    // Se rientri nel sicuro, chiudi e cattura
-    if (nextIsSafe) {
-      closeAndCapture();
-      tracing = false;
-      path = [];
-      player.lastSafeR = player.r; player.lastSafeC = player.c;
-    }
-  } else {
-    if (nextIsSafe) {
-      player.lastSafeR = player.r; player.lastSafeC = player.c;
-    }
-  }
-}
-function closeAndCapture() {
-  if (path.length < 2) return;
-
-  for (const p of path) {
-    claimed[p.r][p.c] = true;
-  }
-
-  const visited = Array.from({ length: rows }, () => Array(cols).fill(false));
-  const q = [];
-
-  const er = constrain(floor(enemy.y / TILE), 0, rows - 1);
-  const ec = constrain(floor(enemy.x / TILE), 0, cols - 1);
-
-  if (tileIsUnclaimed(er, ec)) {
-    visited[er][ec] = true;
-    q.push({ r: er, c: ec });
-  }
-
-  const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
-  while (q.length) {
-    const { r, c } = q.shift();
-    for (const [dr, dc] of dirs) {
-      const nr = r + dr, nc = c + dc;
-      if (!inBounds(nr, nc)) continue;
-      if (visited[nr][nc]) continue;
-      if (!tileIsUnclaimed(nr, nc)) continue;
-      visited[nr][nc] = true;
-      q.push({ r: nr, c: nc });
-    }
-  }
-
-  let newlyRevealed = 0;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (!claimed[r][c] && !revealed[r][c] && !visited[r][c]) {
-        revealed[r][c] = true;
-        newlyRevealed++;
-      }
-    }
-  }
-
-  if (revealedRatio() >= TARGET_REVEAL && !levelCleared) {
-    levelCleared = true;
-    showLevelBanner('Livello completato 🎉');
-    noLoop();
-    setTimeout(nextLevel, 1800);
-  }
-}
-
-function moveEnemy() {
-  let nx = enemy.x + enemy.vx;
-  let ny = enemy.y + enemy.vy;
-
-  if (nx < enemy.radius || nx > width - enemy.radius) {
-    enemy.vx *= -1;
-    nx = constrain(nx, enemy.radius, width - enemy.radius);
-  }
-  if (ny < enemy.radius || ny > height - enemy.radius) {
-    enemy.vy *= -1;
-    ny = constrain(ny, enemy.radius, height - enemy.radius);
-  }
-
-  const tc = floor(nx / TILE), tr = floor(ny / TILE);
-  if (!inBounds(tr, tc) || claimed[tr][tc] || revealed[tr][tc]) {
-    const tcx = floor((enemy.x + enemy.vx) / TILE);
-    const tcy = floor((enemy.y + enemy.vy) / TILE);
-    let hitX = (!inBounds(tr, tcx)) || (inBounds(tr, tcx) && (claimed[tr][tcx] || revealed[tr][tcx]));
-    let hitY = (!inBounds(tcy, tc)) || (inBounds(tcy, tc) && (claimed[tcy][tc] || revealed[tcy][tc]));
-    if (hitX) enemy.vx *= -1;
-    if (hitY) enemy.vy *= -1;
-    nx = enemy.x + enemy.vx;
-    ny = enemy.y + enemy.vy;
-  }
-
-  enemy.x = nx;
-  enemy.y = ny;
-
-  if (tracing) {
-    const er = floor(enemy.y / TILE), ec = floor(enemy.x / TILE);
-    for (const p of path) {
-      if (p.r === er && p.c === ec) {
-        tracing = false;
-        path = [];
-        player.r = player.lastSafeR;
-        player.c = player.lastSafeC;
+  for (let enemy of enemies) {
+    enemy.update();
+    enemy.show();
+    for (let trail of trails) {
+      if (enemy.hits(trail)) {
+        trails = [];
         break;
       }
     }
   }
+
+  updateHUD();
 }
 
-function revealedRatio() {
-  let total = 0, rev = 0;
-  for (let r = 1; r < rows - 1; r++) {
-    for (let c = 1; c < cols - 1; c++) {
-      total++;
-      if (revealed[r][c]) rev++;
+// --- Polyfill audio (evita errori se p5.sound non è caricato)
+if (typeof window.getAudioContext !== 'function') {
+  window.getAudioContext = function () {
+    return null;
+  };
+}
+
+// --- Costanti e utilità
+const BORDER = 10;          // spessore bordo “sicuro”
+const REVEAL_COLOR = 50;    // grigio dell’area rivelata
+const TRAIL_COLOR = [100, 200, 255];
+const PLAYER_COLOR = [240, 240, 240];
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+function isRevealed(x, y) {
+  x = clamp(Math.floor(x), 0, width - 1);
+  y = clamp(Math.floor(y), 0, height - 1);
+  const c = gameArea.get(x, y); // [r,g,b,a]
+  return c[0] >= REVEAL_COLOR - 5; // abbastanza grigio -> rivelato
+}
+
+function updateHUD() {
+  const el = document.getElementById('percent');
+  if (!el) return;
+  el.textContent = `${percentRevealed.toFixed(1)}%`;
+}
+
+function computePercent() {
+  gameArea.loadPixels();
+  let revealed = 0;
+  const step = 2; // accelerazione: campiona un pixel ogni 2
+  for (let y = 0; y < height; y += step) {
+    for (let x = 0; x < width; x += step) {
+      const idx = 4 * (y * width + x);
+      const r = gameArea.pixels[idx];
+      if (r >= REVEAL_COLOR - 5) revealed++;
     }
   }
-  return total > 0 ? rev / total : 0;
+  const total = Math.ceil((width * height) / (step * step));
+  percentRevealed = (revealed / total) * 100;
 }
 
-// ——— Audio: musica ed effetti ———
-let music, sfxLevel, sfxCapture, sfxHit;
-let audioReady = false;
-let levelBannerSoundPlayed = false;
+// --- Reinizializza l’area di gioco con il bordo
+function resetGame() {
+  trails = [];
+  isDrawing = false;
+  percentRevealed = 0;
+  gameOver = false;
 
-function initAudio() {
-  if (audioReady) return;
+  gameArea.background(0);
+  gameArea.noStroke();
+  // cornice piena
+  gameArea.fill(REVEAL_COLOR);
+  gameArea.rect(0, 0, width, height);
+  // ritaglia interno
+  gameArea.fill(0);
+  gameArea.rect(BORDER, BORDER, width - 2 * BORDER, height - 2 * BORDER);
 
-  // Crea le sorgenti audio (sostituisci i percorsi con i tuoi file)
-  music = new Audio('assets/audio/music.mp3');
-  music.loop = true;
-  music.volume = 0.35;
-
-  sfxLevel = new Audio('assets/audio/levelup.wav');
-  sfxLevel.volume = 0.7;
-
-  sfxCapture = new Audio('assets/audio/capture.wav');
-  sfxCapture.volume = 0.6;
-
-  sfxHit = new Audio('assets/audio/hit.wav');
-  sfxHit.volume = 0.6;
-
-  audioReady = true;
+  player = new Player();
+  enemies = [new Enemy(width / 2, height / 2)];
+  computePercent();
+  updateHUD();
 }
 
-function startAudioOnce() {
-  initAudio();
-  // Avvia musica solo al primo input dell’utente (policy browser)
-  if (music && music.paused) {
-    music.currentTime = 0;
-    music.play().catch(() => {});
+// --- Ridefinisco setup per inizializzazione corretta
+function setup() {
+  const holder = document.getElementById('game-holder');
+  const canvas = createCanvas(holder.offsetWidth, holder.offsetHeight);
+  canvas.parent(holder);
+  gameArea = createGraphics(width, height);
+  resetGame();
+  retroSound = getAudioContext();
+
+  // opzionale: ridimensiona se cambia il contenitore
+  window.addEventListener('resize', () => {
+    const w = holder.offsetWidth;
+    const h = holder.offsetHeight;
+    resizeCanvas(w, h);
+    gameArea = createGraphics(width, height);
+    resetGame();
+  });
+}
+
+// --- Input
+function keyPressed() {
+  if (key === 'r' || key === 'R') {
+    resetGame();
   }
 }
 
-// Avvio audio al primo gesto o tasto
-window.addEventListener('pointerdown', startAudioOnce, { once: true });
-window.addEventListener('keydown', startAudioOnce, { once: true });
+// --- Classi
+class Player {
+  constructor() {
+    this.x = width / 2;
+    this.y = BORDER / 2 + 1; // parte sul bordo superiore interno
+    this.speed = 3;
+    this.lastWasRevealed = true;
+  }
 
-// ——— Disegno elementi di gioco ———
-function drawGridDecor() {
-  // Punti bordo sicuro
-  stroke('#22d3ee');
-  strokeWeight(2);
-  noFill();
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (claimed[r][c]) {
-        point(c * TILE + TILE / 2, r * TILE + TILE / 2);
-      }
+  update() {
+    let dx = 0, dy = 0;
+    if (keyIsDown(LEFT_ARROW)) dx -= 1;
+    if (keyIsDown(RIGHT_ARROW)) dx += 1;
+    if (keyIsDown(UP_ARROW)) dy -= 1;
+    if (keyIsDown(DOWN_ARROW)) dy += 1;
+
+    if (dx !== 0 && dy !== 0) {
+      const inv = 1 / Math.sqrt(2);
+      dx *= inv; dy *= inv;
     }
-  }
-  // Path in corso
-  if (tracing && path.length) {
-    stroke('#fbbf24');
-    strokeWeight(3);
-    for (let i = 1; i < path.length; i++) {
-      const a = path[i - 1], b = path[i];
-      line(a.c * TILE + TILE / 2, a.r * TILE + TILE / 2, b.c * TILE + TILE / 2, b.r * TILE + TILE / 2);
+
+    const nx = clamp(this.x + dx * this.speed, 0, width - 1);
+    const ny = clamp(this.y + dy * this.speed, 0, height - 1);
+
+    const nowRevealed = isRevealed(nx, ny);
+
+    // Inizio tracciamento quando esco da zona rivelata
+    if (!nowRevealed && !isDrawing && this.lastWasRevealed) {
+      isDrawing = true;
+      drawStart = createVector(this.x, this.y);
+      const t = new Trail();
+      t.addPoint(this.x, this.y);
+      trails.push(t);
     }
+
+    // Aggiungo punti mentre traccio
+    if (isDrawing && trails.length > 0) {
+      trails[trails.length - 1].addPoint(nx, ny);
+    }
+
+    // Chiusura percorso quando rientro nella zona rivelata
+    if (nowRevealed && isDrawing) {
+      this.capture();
+    }
+
+    this.x = nx; this.y = ny;
+    this.lastWasRevealed = nowRevealed;
   }
 
-  // Player
-  noStroke();
-  fill('#a7f3d0');
-  circle(player.c * TILE + TILE / 2, player.r * TILE + TILE / 2, TILE * 0.7);
+  capture() {
+    isDrawing = false;
+    if (trails.length === 0) return;
+    const trail = trails.pop();
+    const pts = trail.points;
+    if (pts.length < 3) return;
 
-  // Enemy
-  fill('#ef4444');
-  circle(enemy.x, enemy.y, enemy.radius * 2);
-}
+    // Riempie il poligono tracciato
+    gameArea.noStroke();
+    gameArea.fill(REVEAL_COLOR);
+    gameArea.beginShape();
+    for (const p of pts) gameArea.vertex(p.x, p.y);
+    gameArea.endShape(CLOSE);
 
-// ——— Loop principale ———
-function draw() {
-  background(0);
-  drawBackground();  // mostra solo le celle rivelate
-  drawOverlay();     // scurisce le non rivelate
-
-  movePlayerTick();
-  moveEnemy();
-  drawGridDecor();
-
-  // HUD percentuale
-  const p = document.getElementById('percent');
-  if (p) p.textContent = `${(revealedRatio() * 100).toFixed(1)}%`;
-
-  // Suono level-up quando si attiva il banner (settato in closeAndCapture)
-  if (levelCleared && !levelBannerSoundPlayed) {
-    startAudioOnce();
-    if (sfxLevel) { try { sfxLevel.currentTime = 0; sfxLevel.play(); } catch (_) {} }
-    levelBannerSoundPlayed = true;
+    computePercent();
+    updateHUD();
   }
 
-  // Schermata finale quando tutti i livelli sono conclusi
-  if (gameCompleted) {
-    push();
+  show() {
     noStroke();
-    fill(0, 0, 0, 160);
-    rect(0, 0, width, height);
-    textAlign(CENTER, CENTER);
-    textSize(36);
-    fill('#22d3ee');
-    text('🎉 Complimenti! Hai completato tutti i livelli 🎉', width / 2, height / 2);
-    pop();
+    fill(PLAYER_COLOR[0], PLAYER_COLOR[1], PLAYER_COLOR[2]);
+    const s = 6;
+    rectMode(CENTER);
+    rect(this.x, this.y, s, s, 2);
+  }
+}
 
-    // Dissolvenza musica
-    if (music && !music.paused) {
-      music.volume = max(0, music.volume - 0.005);
-      if (music.volume === 0) music.pause();
+class Trail {
+  constructor() {
+    this.points = [];
+    this.minDist = 1.5;
+  }
+  addPoint(x, y) {
+    const v = createVector(x, y);
+    const n = this.points.length;
+    if (n === 0 || p5.Vector.dist(this.points[n - 1], v) > this.minDist) {
+      this.points.push(v);
     }
-    noLoop();
+  }
+  show() {
+    noFill();
+    stroke(TRAIL_COLOR[0], TRAIL_COLOR[1], TRAIL_COLOR[2]);
+    strokeWeight(2);
+    beginShape();
+    for (const p of this.points) vertex(p.x, p.y);
+    endShape();
+  }
+}
+
+class Enemy {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.r = 6;
+    const angle = random(TWO_PI);
+    this.vx = 2.2 * Math.cos(angle);
+    this.vy = 2.2 * Math.sin(angle);
+  }
+
+  update() {
+    let nx = this.x + this.vx;
+    let ny = this.y + this.vy;
+
+    // Rimbalza ai bordi finestra
+    if (nx < 0 || nx >= width) { this.vx *= -1; nx = this.x + this.vx; }
+    if (ny < 0 || ny >= height) { this.vy *= -1; ny = this.y + this.vy; }
+
+    // Rimbalzo semplice sulle aree rivelate
+    if (isRevealed(nx, ny)) {
+      // prova invertire asse con riflessione semplice
+      if (!isRevealed(this.x + this.vx, this.y)) this.vx *= -1;
+      if (!isRevealed(this.x, this.y + this.vy)) this.vy *= -1;
+      nx = this.x + this.vx;
+      ny = this.y + this.vy;
+    }
+
+    this.x = nx;
+    this.y = ny;
+  }
+
+  show() {
+    noStroke();
+    fill(255, 70, 70);
+    circle(this.x, this.y, this.r * 2);
+  }
+
+  hits(trail) {
+    const pts = trail.points;
+    for (let i = 1; i < pts.length; i++) {
+      if (this._distToSeg(pts[i - 1], pts[i]) < this.r) return true;
+    }
+    return false;
+  }
+
+  _distToSeg(a, b) {
+    const px = this.x, py = this.y;
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const wx = px - a.x, wy = py - a.y;
+    const c1 = vx * wx + vy * wy;
+    if (c1 <= 0) return dist(px, py, a.x, a.y);
+    const c2 = vx * vx + vy * vy;
+    if (c2 <= c1) return dist(px, py, b.x, b.y);
+    const t = c1 / c2;
+    const projx = a.x + t * vx;
+    const projy = a.y + t * vy;
+    return dist(px, py, projx, projy);
   }
 }
 
