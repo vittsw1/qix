@@ -13,7 +13,7 @@ const SPEED_TICKS = 1;  // 1 = più veloce (passi griglia per frame)
 const TARGET_REVEAL = 0.75; // 75% per "vittoria"
 
 // Aggiungi qui i tuoi file immagine (in assets/images/)
-const BG_SOURCES = ['woman1.jpg', 'woman2.jpg'];
+const BG_SOURCES = ['assets/images/woman1.jpg', 'assets/images/woman2.jpg'];
   // Esempi: 'assets/images/woman1.jpg', 'assets/images/woman2.jpg'
 ];
 
