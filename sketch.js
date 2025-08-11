@@ -228,4 +228,6 @@ function moveEnemy() {
     const er = floor(enemy.y / TILE), ec = floor(enemy.x / TILE);
     for (const p of path) {
       if (p.r === er && p.c === ec) {
-        tracing =
+        tracing = false;
+        path = [];
+        player.r = player.lastSafeR;
