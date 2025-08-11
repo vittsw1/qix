@@ -15,7 +15,6 @@ const TARGET_REVEAL = 0.75; // 75% per "vittoria"
 // Aggiungi qui i tuoi file immagine (in assets/images/)
 const BG_SOURCES = ['assets/images/woman1.jpg', 'assets/images/woman2.jpg'];
   // Esempi: 'assets/images/woman1.jpg', 'assets/images/woman2.jpg'
-];
 
 let cols, rows;
 let claimed;   // boolean [r][c] – bordo/sicuro
