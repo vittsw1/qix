@@ -106,7 +106,8 @@ function rebuildScaledBg() {
   scaledBg.image(bgImg, (width - dw) / 2, (height - dh) / 2, dw, dh);
 }
 
-function showLevelBanner(text) {
+
+function showLevelBanner(msg) {
   push();
   noStroke();
   fill(0, 0, 0, 180);
@@ -114,9 +115,10 @@ function showLevelBanner(text) {
   textAlign(CENTER, CENTER);
   textSize(36);
   fill('#22d3ee');
-  text(text, width / 2, height / 2);
+  text(msg, width / 2, height / 2);
   pop();
 }
+
 
 function drawBackground() {
   // Disegna l’immagine SOLO dove revealed[r][c] è true
