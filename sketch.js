@@ -9,11 +9,19 @@
 // Config
 const TILE = 12;
 const W = 720, H = 480; // multipli di TILE
-const SPEED_TICKS = 1;  // 1 = più veloce (passi griglia per frame)
-const TARGET_REVEAL = 0.75; // 75% per "vittoria"
+// Velocità: più alto = più lento (si muove ogni N frame)
+const SAFE_SPEED_TICKS = 1;   // sul bordo: scorrevole
+const TRACE_SPEED_TICKS = 3;  // mentre traccia: più lento (difficoltà ↑)
+const TARGET_REVEAL = 0.75;   // 75% per "vittoria"
 
 // File immagine (in assets/images/)
 const BG_SOURCES = ['assets/images/woman1.jpg', 'assets/images/woman2.jpg'];
+
+// Velocità nemico per livello (più veloce ai livelli successivi)
+const ENEMY_SPEED_BY_LEVEL = [
+  { vx: 3.0, vy: 2.5 }, // livello 1
+  { vx: 3.6, vy: 3.0 }  // livello 2
+];
 
 let cols, rows;
 let claimed;   // boolean [r][c] – bordo/sicuro
@@ -24,11 +32,13 @@ let tracing = false;
 let player = { r: 0, c: 0, dr: 0, dc: 1, lastSafeR: 0, lastSafeC: 0, tick: 0 };
 let enemy = { x: 0, y: 0, vx: 2.1, vy: 1.7, radius: 6 };
 
-let bgImgs = [];   // tutte le immagini caricate
-let bgImg = null;  // immagine corrente
+let bgImgs = [];     // tutte le immagini caricate
+let bgImg = null;    // immagine corrente
 let scaledBg = null; // cache dell'immagine ridimensionata alla canvas
+
 let level = 0;
 let levelCleared = false;
+let gameCompleted = false;
 
 function preload() {
   // Carica tutte le immagini per i livelli
@@ -42,11 +52,15 @@ function setup() {
   cols = floor(W / TILE);
   rows = floor(H / TILE);
 
-  resetGameState();
-
-  // Se esiste almeno un’immagine, usa la prima
   bgImg = bgImgs[level] || null;
   rebuildScaledBg();
+  resetGameState();
+}
+
+function setEnemySpeedForLevel() {
+  const spec = ENEMY_SPEED_BY_LEVEL[Math.min(level, ENEMY_SPEED_BY_LEVEL.length - 1)];
+  enemy.vx = spec.vx;
+  enemy.vy = spec.vy;
 }
 
 function resetGameState() {
@@ -74,6 +88,7 @@ function resetGameState() {
   // Nemico dentro l'area non rivelata
   enemy.x = width * 0.5;
   enemy.y = height * 0.5;
+  setEnemySpeedForLevel();
 }
 
 function nextLevel() {
@@ -84,8 +99,9 @@ function nextLevel() {
     resetGameState();
     loop(); // riprende il draw
   } else {
-    // Nessun altro livello: gioco completato
-    // Lasciamo la schermata finale mostrata e il loop fermo
+    // Gioco completato
+    gameCompleted = true;
+    loop(); // lascio correre un frame per disegnare il messaggio finale
   }
 }
 
@@ -106,7 +122,6 @@ function rebuildScaledBg() {
   scaledBg.image(bgImg, (width - dw) / 2, (height - dh) / 2, dw, dh);
 }
 
-
 function showLevelBanner(msg) {
   push();
   noStroke();
@@ -118,7 +133,6 @@ function showLevelBanner(msg) {
   text(msg, width / 2, height / 2);
   pop();
 }
-
 
 function drawBackground() {
   // Disegna l’immagine SOLO dove revealed[r][c] è true
@@ -170,7 +184,10 @@ function tileIsUnclaimed(r, c) {
 
 function movePlayerTick() {
   player.tick++;
-  if (player.tick % SPEED_TICKS !== 0) return;
+
+  // usa velocità diverse a seconda che stia tracciando o no
+  const stepEvery = tracing ? TRACE_SPEED_TICKS : SAFE_SPEED_TICKS;
+  if (player.tick % stepEvery !== 0) return;
 
   const nr = player.r + player.dr;
   const nc = player.c + player.dc;
@@ -206,16 +223,13 @@ function movePlayerTick() {
     }
   }
 }
-
 function closeAndCapture() {
   if (path.length < 2) return;
 
-  // Congela il percorso come claimed
   for (const p of path) {
     claimed[p.r][p.c] = true;
   }
 
-  // Flood-fill dall'enemy
   const visited = Array.from({ length: rows }, () => Array(cols).fill(false));
   const q = [];
 
@@ -240,7 +254,6 @@ function closeAndCapture() {
     }
   }
 
-  // Rivelazione finale
   let newlyRevealed = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -251,23 +264,18 @@ function closeAndCapture() {
     }
   }
 
-  // Verifica avanzamento livello
   if (revealedRatio() >= TARGET_REVEAL && !levelCleared) {
     levelCleared = true;
     showLevelBanner('Livello completato 🎉');
     noLoop();
-    setTimeout(nextLevel, 2000);
+    setTimeout(nextLevel, 1800);
   }
 }
 
-
-
 function moveEnemy() {
-  // Prossima posizione
   let nx = enemy.x + enemy.vx;
   let ny = enemy.y + enemy.vy;
 
-  // Bordi canvas
   if (nx < enemy.radius || nx > width - enemy.radius) {
     enemy.vx *= -1;
     nx = constrain(nx, enemy.radius, width - enemy.radius);
@@ -277,7 +285,6 @@ function moveEnemy() {
     ny = constrain(ny, enemy.radius, height - enemy.radius);
   }
 
-  // Collisione con pareti claimed o area rivelata (tratta come muro)
   const tc = floor(nx / TILE), tr = floor(ny / TILE);
   if (!inBounds(tr, tc) || claimed[tr][tc] || revealed[tr][tc]) {
     const tcx = floor((enemy.x + enemy.vx) / TILE);
@@ -293,7 +300,6 @@ function moveEnemy() {
   enemy.x = nx;
   enemy.y = ny;
 
-  // Se tocca il path mentre stai tracciando -> fallimento del tratto
   if (tracing) {
     const er = floor(enemy.y / TILE), ec = floor(enemy.x / TILE);
     for (const p of path) {
@@ -319,9 +325,47 @@ function revealedRatio() {
   return total > 0 ? rev / total : 0;
 }
 
+// ——— Audio: musica ed effetti ———
+let music, sfxLevel, sfxCapture, sfxHit;
+let audioReady = false;
+let levelBannerSoundPlayed = false;
 
+function initAudio() {
+  if (audioReady) return;
+
+  // Crea le sorgenti audio (sostituisci i percorsi con i tuoi file)
+  music = new Audio('assets/audio/music.mp3');
+  music.loop = true;
+  music.volume = 0.35;
+
+  sfxLevel = new Audio('assets/audio/levelup.wav');
+  sfxLevel.volume = 0.7;
+
+  sfxCapture = new Audio('assets/audio/capture.wav');
+  sfxCapture.volume = 0.6;
+
+  sfxHit = new Audio('assets/audio/hit.wav');
+  sfxHit.volume = 0.6;
+
+  audioReady = true;
+}
+
+function startAudioOnce() {
+  initAudio();
+  // Avvia musica solo al primo input dell’utente (policy browser)
+  if (music && music.paused) {
+    music.currentTime = 0;
+    music.play().catch(() => {});
+  }
+}
+
+// Avvio audio al primo gesto o tasto
+window.addEventListener('pointerdown', startAudioOnce, { once: true });
+window.addEventListener('keydown', startAudioOnce, { once: true });
+
+// ——— Disegno elementi di gioco ———
 function drawGridDecor() {
-  // Linee bordo sicuro
+  // Punti bordo sicuro
   stroke('#22d3ee');
   strokeWeight(2);
   noFill();
@@ -352,10 +396,11 @@ function drawGridDecor() {
   circle(enemy.x, enemy.y, enemy.radius * 2);
 }
 
+// ——— Loop principale ———
 function draw() {
   background(0);
-  drawBackground();
-  drawOverlay();
+  drawBackground();  // mostra solo le celle rivelate
+  drawOverlay();     // scurisce le non rivelate
 
   movePlayerTick();
   moveEnemy();
@@ -365,14 +410,15 @@ function draw() {
   const p = document.getElementById('percent');
   if (p) p.textContent = `${(revealedRatio() * 100).toFixed(1)}%`;
 
-  // Vittoria / passaggio livello
-  if (revealedRatio() >= TARGET_REVEAL && !levelCleared) {
-    levelCleared = true;
-    showLevelBanner('Livello completato 🎉');
-    noLoop();
-    setTimeout(nextLevel, 2000);
-  } else if (level >= bgImgs.length) {
-    // Gioco completato
+  // Suono level-up quando si attiva il banner (settato in closeAndCapture)
+  if (levelCleared && !levelBannerSoundPlayed) {
+    startAudioOnce();
+    if (sfxLevel) { try { sfxLevel.currentTime = 0; sfxLevel.play(); } catch (_) {} }
+    levelBannerSoundPlayed = true;
+  }
+
+  // Schermata finale quando tutti i livelli sono conclusi
+  if (gameCompleted) {
     push();
     noStroke();
     fill(0, 0, 0, 160);
@@ -382,6 +428,13 @@ function draw() {
     fill('#22d3ee');
     text('🎉 Complimenti! Hai completato tutti i livelli 🎉', width / 2, height / 2);
     pop();
+
+    // Dissolvenza musica
+    if (music && !music.paused) {
+      music.volume = max(0, music.volume - 0.005);
+      if (music.volume === 0) music.pause();
+    }
     noLoop();
   }
 }
+
